@@ -1,0 +1,117 @@
+---
+- hosts: datahub
+  sudo: yes
+
+  pre_tasks:
+
+  - name: Update APT cache if stale
+    apt: update_cache=yes cache_valid_time=3600
+
+
+  tasks:
+
+  # Base
+
+  - name: Install useful packages
+    apt: pkg={{ item }}
+    with_items:
+    - curl
+    - htop
+    - vim
+    - wget
+
+  # CKAN
+
+  - name: Install CKAN prerequisites
+    apt: pkg={{ item }}
+    with_items:
+    - nginx
+    - apache2
+    - libapache2-mod-wsgi
+    - libpq5
+
+  - name: Download CKAN
+    get_url: url=http://packaging.ckan.org/{{ ckan_package }}
+             dest=~/{{ ckan_package }}
+    register: ckan_download
+    # When Ansible 1.3 is released, add:
+    # sha256sum: {{ ckan_package_sha56sum }}
+
+  - name: Install CKAN
+    shell: dpkg -i ~/{{ ckan_package }}
+    when: ckan_download.changed
+
+  - name: Configure CKAN
+    template: src=production.ini.j2 dest=/etc/ckan/default/production.ini
+
+  # SOLR
+
+  - name: Install SOLR prerequisites
+    apt: pkg={{ item }}
+    with_items:
+    - openjdk-6-jdk
+
+  - name: Install SOLR
+    apt: pkg=solr-jetty
+    register: solr_package
+
+  - name: Configure Jetty service
+    template: src=default-jetty.j2 dest=/etc/default/jetty
+    notify:
+    - Restart Jetty
+
+  # Remove when Ansible 1.3 is released; supports force=yes
+  - name: Remove distribution SOLR schema configuration
+    file: path=/etc/solr/conf/schema.xml state=absent
+    when: solr_package.changed
+
+  - name: Link SOLR schema configuration
+    file: path=/etc/solr/conf/schema.xml state=link force=yes
+          src=/usr/lib/ckan/default/src/ckan/ckan/config/solr/schema-2.0.xml
+    notify:
+    - Restart Jetty
+
+  # PostgreSQL
+
+  - name: Install PostgreSQL
+    apt: pkg={{ item }}
+    with_items:
+    - postgresql
+    - python-psycopg2
+
+  - name: Create CKAN PostgreSQL user
+    postgresql_user: user=ckan_default password={{ db_password }}
+    sudo_user: postgres
+
+  - name: Create CKAN PostgreSQL database
+    postgresql_db: db=ckan_default owner=ckan_default
+                   template='template0' encoding='UTF-8'
+    sudo_user: postgres
+
+  - name: Check CKAN database
+    command: ckan db version
+    ignore_errors: yes
+    register: db_check
+
+  - name: Initialize CKAN database
+    command: ckan db init
+    when: db_check|failed
+
+  - name: Upgrade CKAN database
+    command: ckan db upgrade
+    when: ckan_download.changed
+
+
+  handlers:
+
+  - name: Restart Jetty
+    service: name=jetty state=restarted
+
+
+  vars:
+    ckan_package: python-ckan-2.0_amd64.deb
+    ckan_package_sha256sum: 157fb8bedfb76d1404b1abddc439127eec248e4318a16b894d15de6b77d419eb
+
+
+  vars_files:
+  - secrets.yml
