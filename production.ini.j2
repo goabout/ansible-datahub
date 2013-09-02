@@ -83,8 +83,10 @@ ckan.site_id = default
 #               Add ``resource_proxy`` to enable resorce proxying and get around
  the
 #               same origin policy
-ckan.plugins = stats json_preview recline_preview
+ckan.plugins = stats json_preview recline_preview spatial_metadata spatial_query
 
+# Spatial Extensions
+ckanext.spatial.search_backend = solr
 
 ## Front-End Settings
 ckan.site_title = CKAN

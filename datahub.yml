@@ -12,11 +12,18 @@
 
   # Base
 
-  - name: Install useful packages
+  - name: Install system packages
     apt: pkg={{ item }}
     with_items:
     - curl
+    - gcc
+    - git
     - htop
+    - libxslt1-dev
+    - python-dev
+    - python-pip
+    - python-software-properties
+    - python-virtualenv
     - vim
     - wget
 
@@ -44,39 +51,42 @@
   - name: Configure CKAN
     template: src=production.ini.j2 dest=/etc/ckan/default/production.ini
 
-  # SOLR
+  # Solr
 
-  - name: Install SOLR prerequisites
+  - name: Install Solr prerequisites
     apt: pkg={{ item }}
     with_items:
     - openjdk-6-jdk
 
-  - name: Install SOLR
+  - name: Install Solr PPA
+    apt_repository: repo='ppa:lucene-ubuntu/dev'
+    register: solr_repo
+
+  - name: Update APT cache
+    apt: update_cache=yes
+    when: solr_repo.changed
+
+  - name: Install Solr
     apt: pkg=solr-jetty
-    register: solr_package
 
   - name: Configure Jetty service
     template: src=default-jetty.j2 dest=/etc/default/jetty
     notify:
     - Restart Jetty
 
-  # Remove when Ansible 1.3 is released; supports force=yes
-  - name: Remove distribution SOLR schema configuration
-    file: path=/etc/solr/conf/schema.xml state=absent
-    when: solr_package.changed
-
-  - name: Link SOLR schema configuration
-    file: path=/etc/solr/conf/schema.xml state=link force=yes
-          src=/usr/lib/ckan/default/src/ckan/ckan/config/solr/schema-2.0.xml
+  - name: Link Solr schema configuration
+    template: src=solr-schema.xml dest=/etc/solr/conf/schema.xml
     notify:
     - Restart Jetty
 
-  # PostgreSQL
+  # PostgreSQL and PostGIS
 
   - name: Install PostgreSQL
     apt: pkg={{ item }}
     with_items:
-    - postgresql
+    - postgis
+    - postgresql-9.1
+    - postgresql-9.1-postgis
     - python-psycopg2
 
   - name: Create CKAN PostgreSQL user
@@ -87,6 +97,27 @@
     postgresql_db: db=ckan_default owner=ckan_default
                    template='template0' encoding='UTF-8'
     sudo_user: postgres
+
+  - name: Check PostGIS in CKAN database
+    shell: psql -d ckan_default -c "SELECT postgis_full_version()" 2>/dev/null
+    sudo_user: postgres
+    ignore_errors: yes
+    register: postgis_check
+
+  - name: Install PostGIS into CKAN database
+    command: psql -d ckan_default -f /usr/share/postgresql/9.1/contrib/postgis-1.5/postgis.sql
+    sudo_user: postgres
+    when: postgis_check|failed
+
+  - name: Install spatial references into CKAN database
+    command: psql -d ckan_default -f /usr/share/postgresql/9.1/contrib/postgis-1.5/spatial_ref_sys.sql
+    sudo_user: postgres
+    when: postgis_check|failed
+
+  - name: Set owner of PostGIS and spatial reference tables
+    command: psql -d ckan_default -c 'ALTER TABLE spatial_ref_sys OWNER TO ckan_default; ALTER TABLE geometry_columns OWNER TO ckan_default;'
+    sudo_user: postgres
+    when: postgis_check|failed
 
   - name: Check CKAN database
     command: ckan db version
@@ -101,6 +132,51 @@
     command: ckan db upgrade
     when: ckan_download.changed
 
+  # CKAN Geospatial extensions
+
+  - name: Download updated version of liblzma5
+    get_url: url={{ liblzma5_package_url }} dest=/tmp/liblzma5.deb
+    register: liblzma5_download
+
+  - name: Install updated version of liblzma5
+    command: dpkg -i /tmp/liblzma5.deb
+    when: liblzma5_download.changed
+
+  - name: Download updated version of libxml2
+    get_url: url={{ libxml2_package_url }} dest=/tmp/libxml2.deb
+    register: libxml2_download
+
+  - name: Install updated version of libxml2
+    command: dpkg -i /tmp/libxml2.deb
+    when: libxml2_download.changed
+
+  - name: Download updated version of python-libxml2
+    get_url: url={{ python_libxml2_package_url }} dest=/tmp/python-libxml2.deb
+    register: python_libxml2_download
+
+  - name: Install updated version of python-libxml2
+    command: dpkg -i /tmp/python-libxml2.deb
+    when: python_libxml2_download.changed
+
+  - name: Install CKAN Geospatial extensions Python package
+    pip: name='git+https://github.com/okfn/ckanext-spatial.git@stable#egg=ckanext-spatial'
+
+  - name: Download CKAN Geospatial extensions requirements.txt file
+    get_url: url=https://raw.github.com/okfn/ckanext-spatial/stable/pip-requirements.txt
+             dest=/tmp/ckanext-spacial-requirements.txt force=yes
+
+  - name: Install CKAN Geospatial extensions Python dependencies
+    pip: requirements=/tmp/ckanext-spacial-requirements.txt
+
+  - name: Install CKAN Geospatial extensions system dependencies
+    apt: pkg={{ item }}
+    with_items:
+    - libgeos-c1
+
+  - name: Create CKAN Geospatial extensions database tables
+    command: /usr/lib/ckan/default/bin/paster --plugin=ckanext-spatial spatial initdb --config=/etc/ckan/default/production.ini
+    when: db_check|failed
+
 
   handlers:
 
@@ -111,7 +187,9 @@
   vars:
     ckan_package: python-ckan-2.0_amd64.deb
     ckan_package_sha256sum: 157fb8bedfb76d1404b1abddc439127eec248e4318a16b894d15de6b77d419eb
-
+    liblzma5_package_url: http://launchpadlibrarian.net/127500119/liblzma5_5.1.1alpha%2B20120614-2ubuntu1_amd64.deb
+    libxml2_package_url: https://launchpadlibrarian.net/145108632/libxml2_2.9.0%2Bdfsg1-4ubuntu4.3_amd64.deb
+    python_libxml2_package_url: https://launchpadlibrarian.net/145108639/python-libxml2_2.9.0%2Bdfsg1-4ubuntu4.3_amd64.deb
 
   vars_files:
   - secrets.yml
